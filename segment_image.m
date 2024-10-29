@@ -1,5 +1,5 @@
 function [seg] = segment_image(I)
-% Image segmentation using simple, complex, and hypercomplex cells
+% Image segmentation using cRF and ncRF mechanisms
 % Input: I - RGB image in double format (range [0,1])
 % Output: seg - Binary boundary map (0s and 1s)
 
@@ -21,6 +21,8 @@ orientations = [0 45 90 135];
 complexResponses_small = zeros([size(Igray), length(orientations)]);
 simpleResponses = zeros([size(Igray), length(orientations)]);
 hypercomplexResponses = zeros([size(Igray), length(orientations)]);
+contextualEnhancement = zeros([size(Igray), length(orientations)]);
+contextualSuppression = zeros([size(Igray), length(orientations)]);
 
 % Process each orientation
 for i = 1:length(orientations)
@@ -50,26 +52,46 @@ for i = 1:length(orientations)
     hypercomplexResponse = complexResponse_small - complexResponse_large;
     hypercomplexResponse(hypercomplexResponse < 0) = 0;  % Threshold negative values
     hypercomplexResponses(:,:,i) = hypercomplexResponse;
+    
+    % Contextual Enhancement (Collinear Facilitation)
+    % Create an elongated Gaussian kernel aligned along the orientation
+    kernelSize = 15;
+    enhancementKernel = orientedGaussianKernel(kernelSize, theta, 10, 1);
+    % Convolve the complex response with the enhancement kernel
+    enhancedResponse = conv2(complexResponse_small, enhancementKernel, 'same');
+    contextualEnhancement(:,:,i) = enhancedResponse;
+    
+    % Contextual Suppression (Surround Suppression)
+    % Apply isotropic Gaussian blur to the complex response
+    suppressionKernel = fspecial('gaussian', [15 15], 5);
+    suppressedResponse = complexResponse_small - imfilter(complexResponse_small, suppressionKernel, 'same');
+    suppressedResponse(suppressedResponse < 0) = 0;  % Threshold negative values
+    contextualSuppression(:,:,i) = suppressedResponse;
 end
 
 % Combine responses across orientations
 maxSimpleResponse = max(simpleResponses, [], 3);
 maxComplexResponse = max(complexResponses_small, [], 3);
 maxHypercomplexResponse = max(hypercomplexResponses, [], 3);
+maxContextualEnhancement = max(contextualEnhancement, [], 3);
+maxContextualSuppression = max(contextualSuppression, [], 3);
 
-% Combine simple, complex, and hypercomplex responses
+% Combine simple, complex, hypercomplex, and ncRF responses
 % Adjust weights as needed (weights sum to 1)
-w1 = 0.2;  % Weight for simple cells
-w2 = 0.5;  % Weight for complex cells
-w3 = 0.3;  % Weight for hypercomplex cells
-combinedResponse = w1 * maxSimpleResponse + w2 * maxComplexResponse + w3 * maxHypercomplexResponse;
+w1 = 0.1;  % Weight for simple cells
+w2 = 0.4;  % Weight for complex cells
+w3 = 0.2;  % Weight for hypercomplex cells
+w4 = 0.15; % Weight for contextual enhancement
+w5 = 0.15; % Weight for contextual suppression
+combinedResponse = w1 * maxSimpleResponse + w2 * maxComplexResponse + ...
+                   w3 * maxHypercomplexResponse + w4 * maxContextualEnhancement + ...
+                   w5 * maxContextualSuppression;
 
 % Normalize response to [0,1] range
 combinedResponse = (combinedResponse - min(combinedResponse(:))) / ...
                   (max(combinedResponse(:)) - min(combinedResponse(:)));
 
 % Apply non-maximum suppression to thin edges
-[~, Gdir] = imgradient(combinedResponse);
 segedges = edge(combinedResponse, 'canny', [0.1 0.2]);
 
 % Clean up boundaries
@@ -116,5 +138,30 @@ end
 if neg_sum ~= 0
     gb(gb < 0) = gb(gb < 0) / neg_sum;
 end
+end
+
+function kernel = orientedGaussianKernel(size, orientation, sigma_x, sigma_y)
+% Creates an anisotropic Gaussian kernel oriented along a specific angle
+% size: size of the kernel (should be odd)
+% orientation: orientation angle in degrees
+% sigma_x: standard deviation along x
+% sigma_y: standard deviation along y
+
+% Create coordinate grids
+halfSize = floor(size/2);
+[x, y] = meshgrid(-halfSize:halfSize, -halfSize:halfSize);
+
+% Convert orientation to radians
+theta = -orientation * pi / 180;
+
+% Rotate coordinates
+x_theta = x * cos(theta) - y * sin(theta);
+y_theta = x * sin(theta) + y * cos(theta);
+
+% Compute Gaussian function
+kernel = exp(- (x_theta.^2 / (2 * sigma_x^2) + y_theta.^2 / (2 * sigma_y^2)));
+
+% Normalize kernel
+kernel = kernel / sum(kernel(:));
 end
 
