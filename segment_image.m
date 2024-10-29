@@ -1,124 +1,82 @@
-function [seg] = segment_image2(I)
-% SEGMENT_IMAGE2 Segments the input color image into boundaries focusing on main objects.
-% This function adjusts its parameters and processing steps to capture high-level objects
-% and minimize unnecessary details and background.
+function [seg] = segment_image(I)
+% Image segmentation using complex cells (Gabor filters) based on lab implementation
+% Input: I - RGB image in double format (range [0,1])
+% Output: seg - Binary boundary map (0s and 1s)
 
-    % Ensure the image is in double precision
-    if ~isa(I, 'double')
-        I = im2double(I);
-    end
-
-    % Convert the image to LAB color space
-    lab_image = rgb2lab(I);
-
-    % Estimate the image type
-    image_type = estimate_image_type(I);
-
-    % Set segmentation parameters based on image type
-    switch image_type
-        case 'animals'
-            sigma = 5;                % High smoothing to merge textures
-            nColors = 2;              % Two clusters to separate object and background
-            cannyThresh = [0.05 0.15];% Lower thresholds to capture object boundaries
-        case 'people'
-            sigma = 5;                % High smoothing to merge clothing colors
-            nColors = 2;              % Two clusters to separate person and background
-            cannyThresh = [0.05 0.15];% Lower thresholds to capture object boundaries
-        case 'buildings'
-            sigma = 3;                % Moderate smoothing
-            nColors = 2;              % Two clusters to separate building and background
-            cannyThresh = [0.1 0.3];  % Moderate thresholds
-        case 'nature'
-            sigma = 6;                % High smoothing to merge natural elements
-            nColors = 2;              % Two clusters for foreground and background
-            cannyThresh = [0.1 0.3];  % Moderate thresholds
-        otherwise  % Default parameters
-            sigma = 4;
-            nColors = 2;
-            cannyThresh = [0.1 0.3];
-    end
-
-    % Apply Gaussian smoothing
-    lab_smooth = imgaussfilt(lab_image, sigma);
-
-    % Perform color-based segmentation using k-means
-    ab = lab_smooth(:,:,2:3);  % Use only a and b channels (color)
-    ab = reshape(ab, [], 2);
-    [cluster_idx, ~] = kmeans(ab, nColors, 'Distance', 'sqEuclidean', 'Replicates', 3);
-
-    % Reshape the cluster map to the original image size
-    pixel_labels = reshape(cluster_idx, size(lab_smooth, 1), size(lab_smooth, 2));
-
-    % Identify the cluster corresponding to the foreground object
-    % Assume that the cluster with higher variance in the L channel is the object
-    L_channel = lab_smooth(:,:,1);
-    object_cluster = identify_object_cluster(pixel_labels, L_channel);
-
-    % Create a binary mask for the object
-    object_mask = pixel_labels == object_cluster;
-
-    % Perform edge detection on the object mask
-    edges_object = edge(object_mask, 'Canny');
-
-    % Perform edge detection on the L channel
-    edges_canny = edge(L_channel, 'Canny', cannyThresh);
-
-    % Combine edge maps
-    edges_combined = edges_object | edges_canny;
-
-    % Apply morphological operations to clean up the edges
-    edges_cleaned = imfill(edges_combined, 'holes');  % Fill enclosed regions
-    edges_cleaned = bwareaopen(edges_cleaned, 50);    % Remove small objects
-
-    % Return the cleaned edge map as seg
-    seg = edges_cleaned;
+% Convert RGB to grayscale
+if size(I,3) == 3
+    Igray = rgb2gray(I);
+else
+    Igray = I;
 end
 
-function image_type = estimate_image_type(I)
-% ESTIMATE_IMAGE_TYPE Estimates the image type based on simple image features.
-% Returns one of 'animals', 'people', 'buildings', 'nature'.
+% Parameters matching lab implementation
+sigma = 3;
+lambda = 0.1;
+gamma = 0.75;
 
-    % Simple heuristic based on aspect ratio and color variance
-    [rows, cols, ~] = size(I);
-    aspect_ratio = cols / rows;
-    color_variance = mean(var(reshape(I, [], 3)));
+% Use multiple orientations for comprehensive edge detection
+orientations = [0 45 90 135];
+responses = zeros([size(Igray), length(orientations)]);
 
-    if color_variance < 0.02
-        image_type = 'buildings';
-    elseif aspect_ratio > 1.5
-        image_type = 'nature';
-    else
-        % Assuming 'people' or 'animals' based on the presence of skin tones
-        % Convert to HSV and check for skin-like colors
-        hsvI = rgb2hsv(I);
-        hue = hsvI(:,:,1);
-        saturation = hsvI(:,:,2);
-        value = hsvI(:,:,3);
-
-        skin_mask = (hue > 0.0 & hue < 0.1) & (saturation > 0.2 & saturation < 0.7) & (value > 0.4 & value < 0.9);
-        skin_ratio = sum(skin_mask(:)) / numel(skin_mask);
-
-        if skin_ratio > 0.1
-            image_type = 'people';
-        else
-            image_type = 'animals';
-        end
-    end
+% Process each orientation
+for i = 1:length(orientations)
+    theta = orientations(i);
+    
+    % Generate Gabor filters with 90 and 0 degree phase shift
+    gaborFilter90 = gabor2(sigma, lambda, theta, gamma, 90);
+    gaborFilter0 = gabor2(sigma, lambda, theta, gamma, 0);
+    
+    % Convolve image with both filters
+    gaborResponse90 = conv2(Igray, gaborFilter90, 'same');
+    gaborResponse0 = conv2(Igray, gaborFilter0, 'same');
+    
+    % Complex cell response for this orientation
+    responses(:,:,i) = sqrt(gaborResponse90.^2 + gaborResponse0.^2);
 end
 
-function object_cluster = identify_object_cluster(pixel_labels, L_channel)
-% IDENTIFY_OBJECT_CLUSTER Identifies which cluster corresponds to the foreground object.
-% Assumes that the object cluster has higher variance in the L channel.
+% Combine responses from all orientations
+combinedResponse = max(responses, [], 3);
 
-    clusters = unique(pixel_labels);
-    num_clusters = length(clusters);
-    cluster_variances = zeros(num_clusters,1);
+% Normalize response to [0,1] range
+combinedResponse = (combinedResponse - min(combinedResponse(:))) / ...
+                  (max(combinedResponse(:)) - min(combinedResponse(:)));
 
-    for i = 1:num_clusters
-        cluster_mask = pixel_labels == clusters(i);
-        cluster_variances(i) = var(L_channel(cluster_mask));
-    end
+% Threshold to create binary boundary map
+threshold = graythresh(combinedResponse);
+seg = combinedResponse > threshold;
 
-    [~, idx] = max(cluster_variances);
-    object_cluster = clusters(idx);
+% Clean up boundaries
+seg = bwmorph(seg, 'thin', Inf);  % Thin to single-pixel width
+seg = bwareaopen(seg, 20);        % Remove small segments
+
+end
+
+function gb=gabor2(sigma,freq,orient,aspect,phase)
+% Implementation of 2D Gabor filter - exact implementation from labs
+% Parameters:
+% sigma  = standard deviation of Gaussian envelope
+% freq   = frequency of sine wave
+% orient = orientation from horizontal (degrees)
+% aspect = aspect ratio of Gaussian envelope
+% phase  = phase of sine wave (degrees)
+
+sz = fix(7*sigma/max(0.2,aspect));
+if mod(sz,2)==0, sz=sz+1; end
+
+[x y] = meshgrid(-fix(sz/2):fix(sz/2));
+
+% Rotation 
+orient = (orient-90)*pi/180;
+xDash = x*cos(orient) + y*sin(orient);
+yDash = -x*sin(orient) + y*cos(orient);
+
+phase = phase*pi/180;
+
+gb = exp(-.5*((xDash.^2/sigma^2)+(aspect^2*yDash.^2/sigma^2))) .* ...
+     cos(2*pi*xDash*freq + phase);
+
+% Normalize filter
+gb(gb>0) = gb(gb>0)./sum(sum(max(0,gb)));
+gb(gb<0) = gb(gb<0)./sum(sum(max(0,-gb)));
 end
