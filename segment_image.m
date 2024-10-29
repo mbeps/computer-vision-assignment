@@ -1,5 +1,5 @@
 function [seg] = segment_image(I)
-% Image segmentation using both simple and complex cells
+% Image segmentation using simple, complex, and hypercomplex cells
 % Input: I - RGB image in double format (range [0,1])
 % Output: seg - Binary boundary map (0s and 1s)
 
@@ -10,49 +10,66 @@ else
     Igray = I;
 end
 
-% Parameters from lab implementation
-sigma = 3;
+% Parameters
+sigma_small = 3;        % Small scale sigma for complex cells
+sigma_large = 5;        % Large scale sigma for hypercomplex cells
 lambda = 0.1;
 gamma = 0.75;
 orientations = [0 45 90 135];
 
 % Initialize response matrices
-complexResponses = zeros([size(Igray), length(orientations)]);
+complexResponses_small = zeros([size(Igray), length(orientations)]);
 simpleResponses = zeros([size(Igray), length(orientations)]);
+hypercomplexResponses = zeros([size(Igray), length(orientations)]);
 
 % Process each orientation
 for i = 1:length(orientations)
     theta = orientations(i);
     
     % Simple cells (phase = 90)
-    gaborFilterSimple = gabor2(sigma, lambda, theta, gamma, 90);
+    gaborFilterSimple = gabor2(sigma_small, lambda, theta, gamma, 90);
     simpleResponse = conv2(Igray, gaborFilterSimple, 'same');
-    simpleResponses(:,:,i) = abs(simpleResponse);  % Take absolute value for edge strength
+    simpleResponses(:,:,i) = abs(simpleResponse);  % Edge strength
     
-    % Complex cells (phase = 0 and 90)
-    gaborFilter90 = gabor2(sigma, lambda, theta, gamma, 90);
-    gaborFilter0 = gabor2(sigma, lambda, theta, gamma, 0);
+    % Complex cells at small scale (sigma_small)
+    gaborFilter90_small = gabor2(sigma_small, lambda, theta, gamma, 90);
+    gaborFilter0_small = gabor2(sigma_small, lambda, theta, gamma, 0);
+    response90_small = conv2(Igray, gaborFilter90_small, 'same');
+    response0_small = conv2(Igray, gaborFilter0_small, 'same');
+    complexResponse_small = sqrt(response90_small.^2 + response0_small.^2);
+    complexResponses_small(:,:,i) = complexResponse_small;
     
-    response90 = conv2(Igray, gaborFilter90, 'same');
-    response0 = conv2(Igray, gaborFilter0, 'same');
+    % Complex cells at large scale (sigma_large) for hypercomplex cells
+    gaborFilter90_large = gabor2(sigma_large, lambda, theta, gamma, 90);
+    gaborFilter0_large = gabor2(sigma_large, lambda, theta, gamma, 0);
+    response90_large = conv2(Igray, gaborFilter90_large, 'same');
+    response0_large = conv2(Igray, gaborFilter0_large, 'same');
+    complexResponse_large = sqrt(response90_large.^2 + response0_large.^2);
     
-    complexResponses(:,:,i) = sqrt(response90.^2 + response0.^2);
+    % Hypercomplex response (end-stopping)
+    hypercomplexResponse = complexResponse_small - complexResponse_large;
+    hypercomplexResponse(hypercomplexResponse < 0) = 0;  % Threshold negative values
+    hypercomplexResponses(:,:,i) = hypercomplexResponse;
 end
 
 % Combine responses across orientations
 maxSimpleResponse = max(simpleResponses, [], 3);
-maxComplexResponse = max(complexResponses, [], 3);
+maxComplexResponse = max(complexResponses_small, [], 3);
+maxHypercomplexResponse = max(hypercomplexResponses, [], 3);
 
-% Combine simple and complex responses
-% Weight complex cells more since they're better at general boundary detection
-combinedResponse = 0.3 * maxSimpleResponse + 0.7 * maxComplexResponse;
+% Combine simple, complex, and hypercomplex responses
+% Adjust weights as needed (weights sum to 1)
+w1 = 0.2;  % Weight for simple cells
+w2 = 0.5;  % Weight for complex cells
+w3 = 0.3;  % Weight for hypercomplex cells
+combinedResponse = w1 * maxSimpleResponse + w2 * maxComplexResponse + w3 * maxHypercomplexResponse;
 
 % Normalize response to [0,1] range
 combinedResponse = (combinedResponse - min(combinedResponse(:))) / ...
                   (max(combinedResponse(:)) - min(combinedResponse(:)));
 
 % Apply non-maximum suppression to thin edges
-[Gmag, Gdir] = imgradient(combinedResponse);
+[~, Gdir] = imgradient(combinedResponse);
 segedges = edge(combinedResponse, 'canny', [0.1 0.2]);
 
 % Clean up boundaries
@@ -65,8 +82,8 @@ seg = imclose(seg, se);
 
 end
 
-function gb=gabor2(sigma,freq,orient,aspect,phase)
-% Implementation of 2D Gabor filter - exact implementation from labs
+function gb = gabor2(sigma, freq, orient, aspect, phase)
+% Implementation of 2D Gabor filter
 % Parameters:
 % sigma  = standard deviation of Gaussian envelope
 % freq   = frequency of sine wave
@@ -74,22 +91,30 @@ function gb=gabor2(sigma,freq,orient,aspect,phase)
 % aspect = aspect ratio of Gaussian envelope
 % phase  = phase of sine wave (degrees)
 
-sz = fix(7*sigma/max(0.2,aspect));
-if mod(sz,2)==0, sz=sz+1; end
+sz = fix(7 * sigma / max(0.2, aspect));
+if mod(sz, 2) == 0, sz = sz + 1; end
 
-[x y] = meshgrid(-fix(sz/2):fix(sz/2));
+[x, y] = meshgrid(-fix(sz/2):fix(sz/2));
 
 % Rotation 
-orient = (orient-90)*pi/180;
-xDash = x*cos(orient) + y*sin(orient);
-yDash = -x*sin(orient) + y*cos(orient);
+orient = (orient - 90) * pi / 180;
+xDash = x * cos(orient) + y * sin(orient);
+yDash = -x * sin(orient) + y * cos(orient);
 
-phase = phase*pi/180;
+phase = phase * pi / 180;
 
-gb = exp(-.5*((xDash.^2/sigma^2)+(aspect^2*yDash.^2/sigma^2))) .* ...
-     cos(2*pi*xDash*freq + phase);
+gb = exp(-0.5 * ((xDash.^2 / sigma^2) + (aspect^2 * yDash.^2 / sigma^2))) .* ...
+     cos(2 * pi * xDash * freq + phase);
 
 % Normalize filter
-gb(gb>0) = gb(gb>0)./sum(sum(max(0,gb)));
-gb(gb<0) = gb(gb<0)./sum(sum(max(0,-gb)));
+pos_sum = sum(gb(gb > 0));
+neg_sum = sum(-gb(gb < 0));
+
+if pos_sum ~= 0
+    gb(gb > 0) = gb(gb > 0) / pos_sum;
 end
+if neg_sum ~= 0
+    gb(gb < 0) = gb(gb < 0) / neg_sum;
+end
+end
+
