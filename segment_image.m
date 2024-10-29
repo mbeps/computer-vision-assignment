@@ -1,5 +1,5 @@
 function [seg] = segment_image(I)
-% Image segmentation using complex cells (Gabor filters) based on lab implementation
+% Image segmentation using both simple and complex cells
 % Input: I - RGB image in double format (range [0,1])
 % Output: seg - Binary boundary map (0s and 1s)
 
@@ -10,45 +10,58 @@ else
     Igray = I;
 end
 
-% Parameters matching lab implementation
+% Parameters from lab implementation
 sigma = 3;
 lambda = 0.1;
 gamma = 0.75;
-
-% Use multiple orientations for comprehensive edge detection
 orientations = [0 45 90 135];
-responses = zeros([size(Igray), length(orientations)]);
+
+% Initialize response matrices
+complexResponses = zeros([size(Igray), length(orientations)]);
+simpleResponses = zeros([size(Igray), length(orientations)]);
 
 % Process each orientation
 for i = 1:length(orientations)
     theta = orientations(i);
     
-    % Generate Gabor filters with 90 and 0 degree phase shift
+    % Simple cells (phase = 90)
+    gaborFilterSimple = gabor2(sigma, lambda, theta, gamma, 90);
+    simpleResponse = conv2(Igray, gaborFilterSimple, 'same');
+    simpleResponses(:,:,i) = abs(simpleResponse);  % Take absolute value for edge strength
+    
+    % Complex cells (phase = 0 and 90)
     gaborFilter90 = gabor2(sigma, lambda, theta, gamma, 90);
     gaborFilter0 = gabor2(sigma, lambda, theta, gamma, 0);
     
-    % Convolve image with both filters
-    gaborResponse90 = conv2(Igray, gaborFilter90, 'same');
-    gaborResponse0 = conv2(Igray, gaborFilter0, 'same');
+    response90 = conv2(Igray, gaborFilter90, 'same');
+    response0 = conv2(Igray, gaborFilter0, 'same');
     
-    % Complex cell response for this orientation
-    responses(:,:,i) = sqrt(gaborResponse90.^2 + gaborResponse0.^2);
+    complexResponses(:,:,i) = sqrt(response90.^2 + response0.^2);
 end
 
-% Combine responses from all orientations
-combinedResponse = max(responses, [], 3);
+% Combine responses across orientations
+maxSimpleResponse = max(simpleResponses, [], 3);
+maxComplexResponse = max(complexResponses, [], 3);
+
+% Combine simple and complex responses
+% Weight complex cells more since they're better at general boundary detection
+combinedResponse = 0.3 * maxSimpleResponse + 0.7 * maxComplexResponse;
 
 % Normalize response to [0,1] range
 combinedResponse = (combinedResponse - min(combinedResponse(:))) / ...
                   (max(combinedResponse(:)) - min(combinedResponse(:)));
 
-% Threshold to create binary boundary map
-threshold = graythresh(combinedResponse);
-seg = combinedResponse > threshold;
+% Apply non-maximum suppression to thin edges
+[Gmag, Gdir] = imgradient(combinedResponse);
+segedges = edge(combinedResponse, 'canny', [0.1 0.2]);
 
 % Clean up boundaries
-seg = bwmorph(seg, 'thin', Inf);  % Thin to single-pixel width
-seg = bwareaopen(seg, 20);        % Remove small segments
+seg = bwmorph(segedges, 'thin', Inf);  % Ensure single-pixel width
+seg = bwareaopen(seg, 20);             % Remove small segments
+
+% Close small gaps
+se = strel('disk', 1);
+seg = imclose(seg, se);
 
 end
 
