@@ -11,7 +11,7 @@ else
 end
 
 % Parameters
-sigma_small = 3;        % Small scale sigma for complex cells
+sigma_small = 2;        % Small scale sigma for complex cells
 sigma_large = 5;        % Large scale sigma for hypercomplex cells
 lambda = 0.1;
 gamma = 0.75;
@@ -78,11 +78,11 @@ maxContextualSuppression = max(contextualSuppression, [], 3);
 
 % Combine simple, complex, hypercomplex, and ncRF responses
 % Adjust weights as needed (weights sum to 1)
-w1 = 0.1;  % Weight for simple cells
+w1 = 0.06;  % Weight for simple cells
 w2 = 0.4;  % Weight for complex cells
-w3 = 0.2;  % Weight for hypercomplex cells
+w3 = 0.25;  % Weight for hypercomplex cells
 w4 = 0.15; % Weight for contextual enhancement
-w5 = 0.15; % Weight for contextual suppression
+w5 = 0.5; % Weight for contextual suppression
 combinedResponse = w1 * maxSimpleResponse + w2 * maxComplexResponse + ...
                    w3 * maxHypercomplexResponse + w4 * maxContextualEnhancement + ...
                    w5 * maxContextualSuppression;
@@ -92,11 +92,11 @@ combinedResponse = (combinedResponse - min(combinedResponse(:))) / ...
                   (max(combinedResponse(:)) - min(combinedResponse(:)));
 
 % Apply non-maximum suppression to thin edges
-segedges = edge(combinedResponse, 'canny', [0.1 0.2]);
+segedges = edge(combinedResponse, 'canny', [0.11 0.29]);
 
 % Clean up boundaries
 seg = bwmorph(segedges, 'thin', Inf);  % Ensure single-pixel width
-seg = bwareaopen(seg, 20);             % Remove small segments
+seg = bwareaopen(seg, 30);             % Remove small segments
 
 % Close small gaps
 se = strel('disk', 1);
@@ -105,18 +105,22 @@ seg = imclose(seg, se);
 end
 
 function gb = gabor2(sigma, freq, orient, aspect, phase)
-% Implementation of 2D Gabor filter
+%function gb=gabor2(sigma,freq,orient,aspect,phase)
+%
+% This function produces a numerical approximation to 2D Gabor function.
 % Parameters:
-% sigma  = standard deviation of Gaussian envelope
-% freq   = frequency of sine wave
-% orient = orientation from horizontal (degrees)
-% aspect = aspect ratio of Gaussian envelope
-% phase  = phase of sine wave (degrees)
+% sigma  = standard deviation of Gaussian envelope, this in-turn controls the
+%          size of the result (pixels)
+% freq   = the frequency of the sin wave (1/pixels)
+% orient = orientation of the Gabor from the horizontal (degrees)
+% aspect = aspect ratio of Gaussian envelope (1 = circular symmetric envelope,
+%          lower values produce longer functions)
+% phase  = the phase of the sin wave (degrees)
 
 sz = fix(7 * sigma / max(0.2, aspect));
 if mod(sz, 2) == 0, sz = sz + 1; end
 
-[x, y] = meshgrid(-fix(sz/2):fix(sz/2));
+[x, y] = meshgrid(-fix(sz/2):fix(sz/2), -fix(sz/2):fix(sz/2));
 
 % Rotation 
 orient = (orient - 90) * pi / 180;
@@ -128,16 +132,9 @@ phase = phase * pi / 180;
 gb = exp(-0.5 * ((xDash.^2 / sigma^2) + (aspect^2 * yDash.^2 / sigma^2))) .* ...
      cos(2 * pi * xDash * freq + phase);
 
-% Normalize filter
-pos_sum = sum(gb(gb > 0));
-neg_sum = sum(-gb(gb < 0));
-
-if pos_sum ~= 0
-    gb(gb > 0) = gb(gb > 0) / pos_sum;
-end
-if neg_sum ~= 0
-    gb(gb < 0) = gb(gb < 0) / neg_sum;
-end
+% Ensure Gabor sums to zero (so it is a valid differencing mask)
+gb(gb > 0) = gb(gb > 0) ./ sum(sum(max(0, gb)));
+gb(gb < 0) = gb(gb < 0) ./ sum(sum(max(0, -gb)));
 end
 
 function kernel = orientedGaussianKernel(size, orientation, sigma_x, sigma_y)
